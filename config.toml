@@ -1,0 +1,8 @@
+[theme]
+# Colores solicitados: Negro (fondo), Blanco (texto), Azul y Amarillo (primarios/acentos)
+base="dark"
+backgroundColor="#0e1117" # Negro Oscuro
+primaryColor="#007ACC"   # Azul
+secondaryBackgroundColor="#1f242d" # Gris oscuro (cajas/sidebar)
+textColor="#FFFFFF"      # Blanco
+font="sans serif"
