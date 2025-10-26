@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 from datetime import date
+from io import BytesIO
 
 # --- Configuración de la Página ---
 st.set_page_config(
@@ -12,12 +13,13 @@ st.set_page_config(
 # --- Variables de Estado para Almacenamiento (Simulación de DB) ---
 # Intenta cargar datos existentes, si no existen, crea un DataFrame vacío.
 def init_data():
+    # Intenta cargar desde el archivo CSV.
     try:
-        # Intenta cargar desde un archivo (simulando persistencia en GitHub)
-        # En un entorno real, usarías una base de datos o Google Sheets.
         df = pd.read_csv("crm_data.csv")
+        # Asegura que las fechas se manejen correctamente si el archivo existe
+        df['Fecha de Servicio'] = pd.to_datetime(df['Fecha de Servicio']).dt.date
     except FileNotFoundError:
-        # Columnas según lo solicitado
+        # Crea el DataFrame vacío con los tipos de datos correctos
         data = {
             'Fecha de Servicio': [],
             'Empresa': [],
@@ -37,14 +39,33 @@ def init_data():
     if 'clientes_df' not in st.session_state:
         st.session_state['clientes_df'] = df
 
-# Guarda los datos en un archivo CSV
+# Guarda los datos en un archivo CSV (persistencia simple)
 def save_data():
     st.session_state['clientes_df'].to_csv("crm_data.csv", index=False)
 
 init_data()
 
+# --- Funcionalidad de Descarga Excel ---
+@st.cache_data
+def to_excel(df):
+    """Convierte el DataFrame a formato Excel para descarga."""
+    output = BytesIO()
+    writer = pd.ExcelWriter(output, engine='xlsxwriter')
+    df.to_excel(writer, index=False, sheet_name='Clientes')
+    # Permite añadir formato, como un color amarillo para el encabezado (personalización)
+    workbook = writer.book
+    yellow_format = workbook.add_format({'bg_color': '#FFC300', 'bold': True}) # Amarillo para encabezados
+    worksheet = writer.sheets['Clientes']
+    worksheet.set_row(0, None, yellow_format)
+    writer.close()
+    processed_data = output.getvalue()
+    return processed_data
+
 # --- Funcionalidad: Ingreso de Datos (CRM) ---
 st.sidebar.header("📝 Ingreso de Nuevo Cliente")
+
+# ... (El código del formulario de ingreso de datos es el mismo que antes, NO lo repetimos aquí) ...
+# Asegúrate de mantener la lógica del 'submit_button'
 
 with st.sidebar.form(key='crm_form'):
     st.subheader("Datos del Servicio")
@@ -66,7 +87,7 @@ with st.sidebar.form(key='crm_form'):
     score = st.slider("Score de Crédito (0-1000)", 0, 1000, 500)
     trabajadores = st.number_input("Cantidad de Trabajadores", min_value=1, step=1)
     
-    # Determinación simple de tipo de cliente (aquí se podría añadir lógica avanzada)
+    # Determinación simple de tipo de cliente
     tipo_cliente = st.selectbox("Clasificación de Cliente", ("Nuevo", "Antiguo"))
 
     submit_button = st.form_submit_button(label='💾 Registrar Cliente')
@@ -101,60 +122,100 @@ with st.sidebar.form(key='crm_form'):
             st.success("✅ Cliente registrado y datos guardados.")
 
 
-# --- Funcionalidad: Visualización de Datos ---
+# --- Funcionalidad: Visualización de Datos y Descarga ---
 st.title("📊 Dashboard de Gestión de Clientes (Camionetas)")
 st.write("---")
 
-df = st.session_state['clientes_df']
+df = st.session_state['clientes_df'].copy() # Trabaja con una copia para los filtros
 
 if df.empty:
     st.info("Aún no hay datos de clientes. Use el formulario de la barra lateral para comenzar.")
 else:
+    # --- Filtros (Usando el color amarillo de forma indirecta con el fondo oscuro) ---
+    st.subheader("Filtros de Clientes")
+    col_filt1, col_filt2, col_filt3 = st.columns(3)
+    
+    # Filtro 1: Tipo de Cliente (Antiguo/Nuevo)
+    tipos_cliente = df['Tipo de Cliente'].unique().tolist()
+    tipo_seleccionado = col_filt1.multiselect("Filtrar por Tipo de Cliente", tipos_cliente, default=tipos_cliente)
+    
+    # Filtro 2: Score Mínimo
+    min_score = col_filt2.slider("Score Mínimo (0-1000)", 0, 1000, 0)
+    
+    # Filtro 3: Rango de Precio
+    min_price, max_price = col_filt3.slider(
+        "Rango de Precio ($)",
+        float(df['Precio'].min()), 
+        float(df['Precio'].max()),
+        (float(df['Precio'].min()), float(df['Precio'].max()))
+    )
+
+    # Aplicar filtros
+    df_filtrado = df[
+        (df['Tipo de Cliente'].isin(tipo_seleccionado)) &
+        (df['Score (0-1000)'] >= min_score) &
+        (df['Precio'] >= min_price) &
+        (df['Precio'] <= max_price)
+    ]
+
+    st.write(f"Mostrando {len(df_filtrado)} de {len(df)} clientes.")
+    st.write("---")
+
     # --- Métricas Clave (KPIs) ---
     col1, col2, col3 = st.columns(3)
-    col1.metric("Total de Clientes", len(df))
-    col2.metric("Precio Promedio", f"${df['Precio'].mean():,.2f}")
-    col3.metric("Clientes Antiguos", len(df[df['Tipo de Cliente'] == 'Antiguo']))
+    col1.metric("Clientes Filtrados", len(df_filtrado))
+    col2.metric("Precio Promedio Filtrado", f"${df_filtrado['Precio'].mean():,.2f}" if not df_filtrado.empty else "$0.00")
+    col3.metric("Score Promedio Filtrado", f"{df_filtrado['Score (0-1000)'].mean():.0f}" if not df_filtrado.empty else "N/A")
 
     st.write("---")
 
-    # --- Gráficos de Visualización ---
-    tab1, tab2, tab3 = st.tabs(["Distribución de Precios", "Clientes por Tipo", "Detalle de Clientes"])
+    # --- Gráficos de Visualización (Usando Azul y complementos) ---
+    # Los gráficos de Plotly usarán el color primario (#007ACC - Azul)
+
+    tab1, tab2, tab3 = st.tabs(["Gráficos", "Tabla de Datos y Descarga", "Detalle CSV"])
 
     with tab1:
-        st.subheader("Distribución de Precios de Servicios")
-        fig_price = px.histogram(df, x='Precio', 
-                                 title='Frecuencia de Precios de Alquiler', 
-                                 color='Tipo de Cliente', 
-                                 barmode='overlay')
-        st.plotly_chart(fig_price, use_container_width=True)
-
-    with tab2:
+        st.subheader("Gráficos del CRM (Datos Filtrados)")
         colA, colB = st.columns(2)
         
         with colA:
-            st.subheader("Conductor vs. Sin Conductor")
-            count_driver = df['¿Conductor?'].value_counts().reset_index()
-            count_driver.columns = ['Tipo', 'Conteo']
-            fig_driver = px.pie(count_driver, values='Conteo', names='Tipo', title='Servicios con/sin Conductor')
-            st.plotly_chart(fig_driver, use_container_width=True)
+            fig_price = px.histogram(df_filtrado, x='Precio', 
+                                     title='Distribución de Precios', 
+                                     color='Tipo de Cliente', 
+                                     barmode='overlay', 
+                                     color_discrete_map={'Nuevo': '#FFC300', 'Antiguo': '#007ACC'}) # Amarillo y Azul
+            st.plotly_chart(fig_price, use_container_width=True)
 
         with colB:
-            st.subheader("Clientes Antiguos vs. Nuevos")
-            count_type = df['Tipo de Cliente'].value_counts().reset_index()
+            count_type = df_filtrado['Tipo de Cliente'].value_counts().reset_index()
             count_type.columns = ['Tipo', 'Conteo']
-            fig_type = px.bar(count_type, x='Tipo', y='Conteo', title='Conteo de Clientes Antiguos/Nuevos', color='Tipo')
+            fig_type = px.bar(count_type, x='Tipo', y='Conteo', title='Clientes Antiguos vs. Nuevos', 
+                             color='Tipo', 
+                             color_discrete_map={'Nuevo': '#FFC300', 'Antiguo': '#007ACC'}) # Amarillo y Azul
             st.plotly_chart(fig_type, use_container_width=True)
 
-    with tab3:
-        st.subheader("Detalle de Todos los Clientes")
-        st.dataframe(df, use_container_width=True) # Muestra el DataFrame completo
 
-# --- Instrucciones de Despliegue (Importante) ---
-st.sidebar.info("""
-    **Para Desplegar:**
-    1. Sube este código (`app.py`, `requirements.txt` y, si existe, `crm_data.csv`) a un repositorio público en **GitHub**.
-    2. Ve a **Streamlit Community Cloud** (share.streamlit.io).
-    3. Conecta tu cuenta de GitHub y selecciona el repositorio.
-    4. Elige el archivo principal (`app.py`) y despliega la aplicación.
-""")
+    with tab2:
+        st.subheader("Tabla de Clientes Filtrados y Ordenados")
+        # Mostrar la tabla ordenada por Fecha de Servicio (descendente)
+        df_ordenado = df_filtrado.sort_values(by='Fecha de Servicio', ascending=False)
+        st.dataframe(df_ordenado, use_container_width=True)
+        
+        st.markdown("---")
+        st.subheader("Descargar Datos en Excel")
+        
+        # Botón de descarga de Excel
+        excel_data = to_excel(df_ordenado)
+        
+        st.download_button(
+            label="Descargar Datos Filtrados (.xlsx) ⬇️",
+            data=excel_data,
+            file_name=f'clientes_camionetas_{date.today()}.xlsx',
+            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            type="primary" # Color azul (primaryColor)
+        )
+        st.caption("La descarga contendrá los datos actualmente visibles en la tabla.")
+
+    with tab3:
+        st.subheader("Datos Brutos (CSV)")
+        st.dataframe(df, use_container_width=True) # Muestra el DataFrame completo sin filtrar
